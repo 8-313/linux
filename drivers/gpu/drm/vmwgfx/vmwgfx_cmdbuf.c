@@ -247,7 +247,7 @@ static void __vmw_cmdbuf_header_free(struct vmw_cmdbuf_header *header)
 {
 	struct vmw_cmdbuf_man *man = header->man;
 
-	BUG_ON(!spin_is_locked(&man->lock));
+	lockdep_assert_held_once(&man->lock);
 
 	if (header->inline_space) {
 		vmw_cmdbuf_header_inline_free(header);
@@ -293,13 +293,10 @@ static int vmw_cmdbuf_header_submit(struct vmw_cmdbuf_header *header)
 	struct vmw_cmdbuf_man *man = header->man;
 	u32 val;
 
-	if (sizeof(header->handle) > 4)
-		val = (header->handle >> 32);
-	else
-		val = 0;
+	val = upper_32_bits(header->handle);
 	vmw_write(man->dev_priv, SVGA_REG_COMMAND_HIGH, val);
 
-	val = (header->handle & 0xFFFFFFFFULL);
+	val = lower_32_bits(header->handle);
 	val |= header->cb_context & SVGA_CB_CONTEXT_MASK;
 	vmw_write(man->dev_priv, SVGA_REG_COMMAND_LOW, val);
 
@@ -676,16 +673,10 @@ static bool vmw_cmdbuf_try_alloc(struct vmw_cmdbuf_man *man,
  
 	memset(info->node, 0, sizeof(*info->node));
 	spin_lock_bh(&man->lock);
-	ret = drm_mm_insert_node_generic(&man->mm, info->node, info->page_size,
-					 0, 0,
-					 DRM_MM_SEARCH_DEFAULT,
-					 DRM_MM_CREATE_DEFAULT);
+	ret = drm_mm_insert_node(&man->mm, info->node, info->page_size);
 	if (ret) {
 		vmw_cmdbuf_man_process(man);
-		ret = drm_mm_insert_node_generic(&man->mm, info->node,
-						 info->page_size, 0, 0,
-						 DRM_MM_SEARCH_DEFAULT,
-						 DRM_MM_CREATE_DEFAULT);
+		ret = drm_mm_insert_node(&man->mm, info->node, info->page_size);
 	}
 
 	spin_unlock_bh(&man->lock);

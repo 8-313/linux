@@ -69,7 +69,7 @@
 #include <linux/kfifo.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 #include <linux/leds.h>
 #endif
 #include <acpi/video.h>
@@ -88,9 +88,6 @@
 
 #define ACPI_FUJITSU_NOTIFY_CODE1     0x80
 
-#define ACPI_VIDEO_NOTIFY_INC_BRIGHTNESS     0x86
-#define ACPI_VIDEO_NOTIFY_DEC_BRIGHTNESS     0x87
-
 /* FUNC interface - command values */
 #define FUNC_RFKILL	0x1000
 #define FUNC_LEDS	0x1001
@@ -100,13 +97,16 @@
 /* FUNC interface - responses */
 #define UNSUPPORTED_CMD 0x80000000
 
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 /* FUNC interface - LED control */
 #define FUNC_LED_OFF	0x1
 #define FUNC_LED_ON	0x30001
 #define KEYBOARD_LAMPS	0x100
 #define LOGOLAMP_POWERON 0x2000
 #define LOGOLAMP_ALWAYS  0x4000
+#define RADIO_LED_ON	0x20
+#define ECO_LED	0x10000
+#define ECO_LED_ON	0x80000
 #endif
 
 /* Hotkey details */
@@ -114,18 +114,12 @@
 #define KEY2_CODE	0x411
 #define KEY3_CODE	0x412
 #define KEY4_CODE	0x413
+#define KEY5_CODE	0x420
 
 #define MAX_HOTKEY_RINGBUFFER_SIZE 100
 #define RINGBUFFERSIZE 40
 
 /* Debugging */
-#define FUJLAPTOP_LOG	   ACPI_FUJITSU_HID ": "
-#define FUJLAPTOP_ERR	   KERN_ERR FUJLAPTOP_LOG
-#define FUJLAPTOP_NOTICE   KERN_NOTICE FUJLAPTOP_LOG
-#define FUJLAPTOP_INFO	   KERN_INFO FUJLAPTOP_LOG
-#define FUJLAPTOP_DEBUG    KERN_DEBUG FUJLAPTOP_LOG
-
-#define FUJLAPTOP_DBG_ALL	  0xffff
 #define FUJLAPTOP_DBG_ERROR	  0x0001
 #define FUJLAPTOP_DBG_WARN	  0x0002
 #define FUJLAPTOP_DBG_INFO	  0x0004
@@ -134,7 +128,7 @@
 #ifdef CONFIG_FUJITSU_LAPTOP_DEBUG
 #define vdbg_printk(a_dbg_level, format, arg...) \
 	do { if (dbg_level & a_dbg_level) \
-		printk(FUJLAPTOP_DEBUG "%s: " format, __func__ , ## arg); \
+		printk(KERN_DEBUG pr_fmt("%s: " format), __func__, ## arg); \
 	} while (0)
 #else
 #define vdbg_printk(a_dbg_level, format, arg...) \
@@ -149,7 +143,7 @@ struct fujitsu_t {
 	char phys[32];
 	struct backlight_device *bl_device;
 	struct platform_device *pf_device;
-	int keycode1, keycode2, keycode3, keycode4;
+	int keycode1, keycode2, keycode3, keycode4, keycode5;
 
 	unsigned int max_brightness;
 	unsigned int brightness_changed;
@@ -173,31 +167,54 @@ struct fujitsu_hotkey_t {
 	int rfkill_state;
 	int logolamp_registered;
 	int kblamps_registered;
+	int radio_led_registered;
+	int eco_led_registered;
 };
 
 static struct fujitsu_hotkey_t *fujitsu_hotkey;
 
 static void acpi_fujitsu_hotkey_notify(struct acpi_device *device, u32 event);
 
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 static enum led_brightness logolamp_get(struct led_classdev *cdev);
-static void logolamp_set(struct led_classdev *cdev,
+static int logolamp_set(struct led_classdev *cdev,
 			       enum led_brightness brightness);
 
 static struct led_classdev logolamp_led = {
  .name = "fujitsu::logolamp",
  .brightness_get = logolamp_get,
- .brightness_set = logolamp_set
+ .brightness_set_blocking = logolamp_set
 };
 
 static enum led_brightness kblamps_get(struct led_classdev *cdev);
-static void kblamps_set(struct led_classdev *cdev,
+static int kblamps_set(struct led_classdev *cdev,
 			       enum led_brightness brightness);
 
 static struct led_classdev kblamps_led = {
  .name = "fujitsu::kblamps",
  .brightness_get = kblamps_get,
- .brightness_set = kblamps_set
+ .brightness_set_blocking = kblamps_set
+};
+
+static enum led_brightness radio_led_get(struct led_classdev *cdev);
+static int radio_led_set(struct led_classdev *cdev,
+			       enum led_brightness brightness);
+
+static struct led_classdev radio_led = {
+ .name = "fujitsu::radio_led",
+ .default_trigger = "rfkill-any",
+ .brightness_get = radio_led_get,
+ .brightness_set_blocking = radio_led_set
+};
+
+static enum led_brightness eco_led_get(struct led_classdev *cdev);
+static int eco_led_set(struct led_classdev *cdev,
+			       enum led_brightness brightness);
+
+static struct led_classdev eco_led = {
+ .name = "fujitsu::eco_led",
+ .brightness_get = eco_led_get,
+ .brightness_set_blocking = eco_led_set
 };
 #endif
 
@@ -248,45 +265,71 @@ static int call_fext_func(int cmd, int arg0, int arg1, int arg2)
 	return value;
 }
 
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 /* LED class callbacks */
 
-static void logolamp_set(struct led_classdev *cdev,
+static int logolamp_set(struct led_classdev *cdev,
 			       enum led_brightness brightness)
 {
-	if (brightness >= LED_FULL) {
-		call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_POWERON, FUNC_LED_ON);
-		call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_ALWAYS, FUNC_LED_ON);
-	} else if (brightness >= LED_HALF) {
-		call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_POWERON, FUNC_LED_ON);
-		call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_ALWAYS, FUNC_LED_OFF);
-	} else {
-		call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_POWERON, FUNC_LED_OFF);
-	}
+	int poweron = FUNC_LED_ON, always = FUNC_LED_ON;
+	int ret;
+
+	if (brightness < LED_HALF)
+		poweron = FUNC_LED_OFF;
+
+	if (brightness < LED_FULL)
+		always = FUNC_LED_OFF;
+
+	ret = call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_POWERON, poweron);
+	if (ret < 0)
+		return ret;
+
+	return call_fext_func(FUNC_LEDS, 0x1, LOGOLAMP_ALWAYS, always);
 }
 
-static void kblamps_set(struct led_classdev *cdev,
+static int kblamps_set(struct led_classdev *cdev,
 			       enum led_brightness brightness)
 {
 	if (brightness >= LED_FULL)
-		call_fext_func(FUNC_LEDS, 0x1, KEYBOARD_LAMPS, FUNC_LED_ON);
+		return call_fext_func(FUNC_LEDS, 0x1, KEYBOARD_LAMPS, FUNC_LED_ON);
 	else
-		call_fext_func(FUNC_LEDS, 0x1, KEYBOARD_LAMPS, FUNC_LED_OFF);
+		return call_fext_func(FUNC_LEDS, 0x1, KEYBOARD_LAMPS, FUNC_LED_OFF);
+}
+
+static int radio_led_set(struct led_classdev *cdev,
+				enum led_brightness brightness)
+{
+	if (brightness >= LED_FULL)
+		return call_fext_func(FUNC_RFKILL, 0x5, RADIO_LED_ON, RADIO_LED_ON);
+	else
+		return call_fext_func(FUNC_RFKILL, 0x5, RADIO_LED_ON, 0x0);
+}
+
+static int eco_led_set(struct led_classdev *cdev,
+				enum led_brightness brightness)
+{
+	int curr;
+
+	curr = call_fext_func(FUNC_LEDS, 0x2, ECO_LED, 0x0);
+	if (brightness >= LED_FULL)
+		return call_fext_func(FUNC_LEDS, 0x1, ECO_LED, curr | ECO_LED_ON);
+	else
+		return call_fext_func(FUNC_LEDS, 0x1, ECO_LED, curr & ~ECO_LED_ON);
 }
 
 static enum led_brightness logolamp_get(struct led_classdev *cdev)
 {
-	enum led_brightness brightness = LED_OFF;
-	int poweron, always;
+	int ret;
 
-	poweron = call_fext_func(FUNC_LEDS, 0x2, LOGOLAMP_POWERON, 0x0);
-	if (poweron == FUNC_LED_ON) {
-		brightness = LED_HALF;
-		always = call_fext_func(FUNC_LEDS, 0x2, LOGOLAMP_ALWAYS, 0x0);
-		if (always == FUNC_LED_ON)
-			brightness = LED_FULL;
-	}
-	return brightness;
+	ret = call_fext_func(FUNC_LEDS, 0x2, LOGOLAMP_ALWAYS, 0x0);
+	if (ret == FUNC_LED_ON)
+		return LED_FULL;
+
+	ret = call_fext_func(FUNC_LEDS, 0x2, LOGOLAMP_POWERON, 0x0);
+	if (ret == FUNC_LED_ON)
+		return LED_HALF;
+
+	return LED_OFF;
 }
 
 static enum led_brightness kblamps_get(struct led_classdev *cdev)
@@ -294,6 +337,26 @@ static enum led_brightness kblamps_get(struct led_classdev *cdev)
 	enum led_brightness brightness = LED_OFF;
 
 	if (call_fext_func(FUNC_LEDS, 0x2, KEYBOARD_LAMPS, 0x0) == FUNC_LED_ON)
+		brightness = LED_FULL;
+
+	return brightness;
+}
+
+static enum led_brightness radio_led_get(struct led_classdev *cdev)
+{
+	enum led_brightness brightness = LED_OFF;
+
+	if (call_fext_func(FUNC_RFKILL, 0x4, 0x0, 0x0) & RADIO_LED_ON)
+		brightness = LED_FULL;
+
+	return brightness;
+}
+
+static enum led_brightness eco_led_get(struct led_classdev *cdev)
+{
+	enum led_brightness brightness = LED_OFF;
+
+	if (call_fext_func(FUNC_LEDS, 0x2, ECO_LED, 0x0) & ECO_LED_ON)
 		brightness = LED_FULL;
 
 	return brightness;
@@ -823,6 +886,8 @@ static int acpi_fujitsu_hotkey_add(struct acpi_device *device)
 	set_bit(fujitsu->keycode2, input->keybit);
 	set_bit(fujitsu->keycode3, input->keybit);
 	set_bit(fujitsu->keycode4, input->keybit);
+	set_bit(fujitsu->keycode5, input->keybit);
+	set_bit(KEY_TOUCHPAD_TOGGLE, input->keybit);
 	set_bit(KEY_UNKNOWN, input->keybit);
 
 	error = input_register_device(input);
@@ -870,7 +935,7 @@ static int acpi_fujitsu_hotkey_add(struct acpi_device *device)
 	/* Suspect this is a keymap of the application panel, print it */
 	pr_info("BTNI: [0x%x]\n", call_fext_func(FUNC_BUTTONS, 0x0, 0x0, 0x0));
 
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 	if (call_fext_func(FUNC_LEDS, 0x0, 0x0, 0x0) & LOGOLAMP_POWERON) {
 		result = led_classdev_register(&fujitsu->pf_device->dev,
 						&logolamp_led);
@@ -890,6 +955,40 @@ static int acpi_fujitsu_hotkey_add(struct acpi_device *device)
 			fujitsu_hotkey->kblamps_registered = 1;
 		} else {
 			pr_err("Could not register LED handler for keyboard lamps, error %i\n",
+			       result);
+		}
+	}
+
+	/*
+	 * BTNI bit 24 seems to indicate the presence of a radio toggle
+	 * button in place of a slide switch, and all such machines appear
+	 * to also have an RF LED.  Therefore use bit 24 as an indicator
+	 * that an RF LED is present.
+	 */
+	if (call_fext_func(FUNC_BUTTONS, 0x0, 0x0, 0x0) & BIT(24)) {
+		result = led_classdev_register(&fujitsu->pf_device->dev,
+						&radio_led);
+		if (result == 0) {
+			fujitsu_hotkey->radio_led_registered = 1;
+		} else {
+			pr_err("Could not register LED handler for radio LED, error %i\n",
+			       result);
+		}
+	}
+
+	/* Support for eco led is not always signaled in bit corresponding
+	 * to the bit used to control the led. According to the DSDT table,
+	 * bit 14 seems to indicate presence of said led as well.
+	 * Confirm by testing the status.
+	*/
+	if ((call_fext_func(FUNC_LEDS, 0x0, 0x0, 0x0) & BIT(14)) &&
+	   (call_fext_func(FUNC_LEDS, 0x2, ECO_LED, 0x0) != UNSUPPORTED_CMD)) {
+		result = led_classdev_register(&fujitsu->pf_device->dev,
+						&eco_led);
+		if (result == 0) {
+			fujitsu_hotkey->eco_led_registered = 1;
+		} else {
+			pr_err("Could not register LED handler for eco LED, error %i\n",
 			       result);
 		}
 	}
@@ -913,12 +1012,18 @@ static int acpi_fujitsu_hotkey_remove(struct acpi_device *device)
 	struct fujitsu_hotkey_t *fujitsu_hotkey = acpi_driver_data(device);
 	struct input_dev *input = fujitsu_hotkey->input;
 
-#if defined(CONFIG_LEDS_CLASS) || defined(CONFIG_LEDS_CLASS_MODULE)
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
 	if (fujitsu_hotkey->logolamp_registered)
 		led_classdev_unregister(&logolamp_led);
 
 	if (fujitsu_hotkey->kblamps_registered)
 		led_classdev_unregister(&kblamps_led);
+
+	if (fujitsu_hotkey->radio_led_registered)
+		led_classdev_unregister(&radio_led);
+
+	if (fujitsu_hotkey->eco_led_registered)
+		led_classdev_unregister(&eco_led);
 #endif
 
 	input_unregister_device(input);
@@ -930,82 +1035,54 @@ static int acpi_fujitsu_hotkey_remove(struct acpi_device *device)
 	return 0;
 }
 
+static void acpi_fujitsu_hotkey_press(int keycode)
+{
+	struct input_dev *input = fujitsu_hotkey->input;
+	int status;
+
+	status = kfifo_in_locked(&fujitsu_hotkey->fifo,
+				 (unsigned char *)&keycode, sizeof(keycode),
+				 &fujitsu_hotkey->fifo_lock);
+	if (status != sizeof(keycode)) {
+		vdbg_printk(FUJLAPTOP_DBG_WARN,
+			    "Could not push keycode [0x%x]\n", keycode);
+		return;
+	}
+	input_report_key(input, keycode, 1);
+	input_sync(input);
+	vdbg_printk(FUJLAPTOP_DBG_TRACE,
+		    "Push keycode into ringbuffer [%d]\n", keycode);
+}
+
+static void acpi_fujitsu_hotkey_release(void)
+{
+	struct input_dev *input = fujitsu_hotkey->input;
+	int keycode, status;
+
+	while (true) {
+		status = kfifo_out_locked(&fujitsu_hotkey->fifo,
+					  (unsigned char *)&keycode,
+					  sizeof(keycode),
+					  &fujitsu_hotkey->fifo_lock);
+		if (status != sizeof(keycode))
+			return;
+		input_report_key(input, keycode, 0);
+		input_sync(input);
+		vdbg_printk(FUJLAPTOP_DBG_TRACE,
+			    "Pop keycode from ringbuffer [%d]\n", keycode);
+	}
+}
+
 static void acpi_fujitsu_hotkey_notify(struct acpi_device *device, u32 event)
 {
 	struct input_dev *input;
-	int keycode, keycode_r;
+	int keycode;
 	unsigned int irb = 1;
-	int i, status;
+	int i;
 
 	input = fujitsu_hotkey->input;
 
-	if (fujitsu_hotkey->rfkill_supported)
-		fujitsu_hotkey->rfkill_state =
-			call_fext_func(FUNC_RFKILL, 0x4, 0x0, 0x0);
-
-	switch (event) {
-	case ACPI_FUJITSU_NOTIFY_CODE1:
-		i = 0;
-		while ((irb =
-			call_fext_func(FUNC_BUTTONS, 0x1, 0x0, 0x0)) != 0
-				&& (i++) < MAX_HOTKEY_RINGBUFFER_SIZE) {
-			switch (irb & 0x4ff) {
-			case KEY1_CODE:
-				keycode = fujitsu->keycode1;
-				break;
-			case KEY2_CODE:
-				keycode = fujitsu->keycode2;
-				break;
-			case KEY3_CODE:
-				keycode = fujitsu->keycode3;
-				break;
-			case KEY4_CODE:
-				keycode = fujitsu->keycode4;
-				break;
-			case 0:
-				keycode = 0;
-				break;
-			default:
-				vdbg_printk(FUJLAPTOP_DBG_WARN,
-					    "Unknown GIRB result [%x]\n", irb);
-				keycode = -1;
-				break;
-			}
-			if (keycode > 0) {
-				vdbg_printk(FUJLAPTOP_DBG_TRACE,
-					"Push keycode into ringbuffer [%d]\n",
-					keycode);
-				status = kfifo_in_locked(&fujitsu_hotkey->fifo,
-						   (unsigned char *)&keycode,
-						   sizeof(keycode),
-						   &fujitsu_hotkey->fifo_lock);
-				if (status != sizeof(keycode)) {
-					vdbg_printk(FUJLAPTOP_DBG_WARN,
-					    "Could not push keycode [0x%x]\n",
-					    keycode);
-				} else {
-					input_report_key(input, keycode, 1);
-					input_sync(input);
-				}
-			} else if (keycode == 0) {
-				while ((status =
-					kfifo_out_locked(
-					 &fujitsu_hotkey->fifo,
-					 (unsigned char *) &keycode_r,
-					 sizeof(keycode_r),
-					 &fujitsu_hotkey->fifo_lock))
-					 == sizeof(keycode_r)) {
-					input_report_key(input, keycode_r, 0);
-					input_sync(input);
-					vdbg_printk(FUJLAPTOP_DBG_TRACE,
-					  "Pop keycode from ringbuffer [%d]\n",
-					  keycode_r);
-				}
-			}
-		}
-
-		break;
-	default:
+	if (event != ACPI_FUJITSU_NOTIFY_CODE1) {
 		keycode = KEY_UNKNOWN;
 		vdbg_printk(FUJLAPTOP_DBG_WARN,
 			    "Unsupported event [0x%x]\n", event);
@@ -1013,8 +1090,62 @@ static void acpi_fujitsu_hotkey_notify(struct acpi_device *device, u32 event)
 		input_sync(input);
 		input_report_key(input, keycode, 0);
 		input_sync(input);
-		break;
+		return;
 	}
+
+	if (fujitsu_hotkey->rfkill_supported)
+		fujitsu_hotkey->rfkill_state =
+			call_fext_func(FUNC_RFKILL, 0x4, 0x0, 0x0);
+
+	i = 0;
+	while ((irb =
+		call_fext_func(FUNC_BUTTONS, 0x1, 0x0, 0x0)) != 0
+			&& (i++) < MAX_HOTKEY_RINGBUFFER_SIZE) {
+		switch (irb & 0x4ff) {
+		case KEY1_CODE:
+			keycode = fujitsu->keycode1;
+			break;
+		case KEY2_CODE:
+			keycode = fujitsu->keycode2;
+			break;
+		case KEY3_CODE:
+			keycode = fujitsu->keycode3;
+			break;
+		case KEY4_CODE:
+			keycode = fujitsu->keycode4;
+			break;
+		case KEY5_CODE:
+			keycode = fujitsu->keycode5;
+			break;
+		case 0:
+			keycode = 0;
+			break;
+		default:
+			vdbg_printk(FUJLAPTOP_DBG_WARN,
+				    "Unknown GIRB result [%x]\n", irb);
+			keycode = -1;
+			break;
+		}
+
+		if (keycode > 0)
+			acpi_fujitsu_hotkey_press(keycode);
+		else if (keycode == 0)
+			acpi_fujitsu_hotkey_release();
+	}
+
+	/* On some models (first seen on the Skylake-based Lifebook
+	 * E736/E746/E756), the touchpad toggle hotkey (Fn+F4) is
+	 * handled in software; its state is queried using FUNC_RFKILL
+	 */
+	if ((fujitsu_hotkey->rfkill_supported & BIT(26)) &&
+	    (call_fext_func(FUNC_RFKILL, 0x1, 0x0, 0x0) & BIT(26))) {
+		keycode = KEY_TOUCHPAD_TOGGLE;
+		input_report_key(input, keycode, 1);
+		input_sync(input);
+		input_report_key(input, keycode, 0);
+		input_sync(input);
+	}
+
 }
 
 /* Initialization */
@@ -1072,6 +1203,7 @@ static int __init fujitsu_init(void)
 	fujitsu->keycode2 = KEY_PROG2;
 	fujitsu->keycode3 = KEY_PROG3;
 	fujitsu->keycode4 = KEY_PROG4;
+	fujitsu->keycode5 = KEY_RFKILL;
 	dmi_check_system(fujitsu_dmi_table);
 
 	result = acpi_bus_register_driver(&acpi_fujitsu_driver);

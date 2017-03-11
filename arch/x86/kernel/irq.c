@@ -14,7 +14,6 @@
 #include <asm/apic.h>
 #include <asm/io_apic.h>
 #include <asm/irq.h>
-#include <asm/idle.h>
 #include <asm/mce.h>
 #include <asm/hw_irq.h>
 #include <asm/desc.h>
@@ -102,8 +101,7 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 	seq_puts(p, "  Rescheduling interrupts\n");
 	seq_printf(p, "%*s: ", prec, "CAL");
 	for_each_online_cpu(j)
-		seq_printf(p, "%10u ", irq_stats(j)->irq_call_count -
-					irq_stats(j)->irq_tlb_count);
+		seq_printf(p, "%10u ", irq_stats(j)->irq_call_count);
 	seq_puts(p, "  Function call interrupts\n");
 	seq_printf(p, "%*s: ", prec, "TLB");
 	for_each_online_cpu(j)
@@ -266,7 +264,7 @@ void __smp_x86_platform_ipi(void)
 		x86_platform_ipi_callback();
 }
 
-__visible void smp_x86_platform_ipi(struct pt_regs *regs)
+__visible void __irq_entry smp_x86_platform_ipi(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
@@ -317,7 +315,7 @@ __visible void smp_kvm_posted_intr_wakeup_ipi(struct pt_regs *regs)
 }
 #endif
 
-__visible void smp_trace_x86_platform_ipi(struct pt_regs *regs)
+__visible void __irq_entry smp_trace_x86_platform_ipi(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
@@ -462,7 +460,7 @@ void fixup_irqs(void)
 		 * non intr-remapping case, we can't wait till this interrupt
 		 * arrives at this cpu before completing the irq move.
 		 */
-		irq_force_complete_move(irq);
+		irq_force_complete_move(desc);
 
 		if (cpumask_any_and(affinity, cpu_online_mask) >= nr_cpu_ids) {
 			break_affinity = 1;
@@ -470,6 +468,15 @@ void fixup_irqs(void)
 		}
 
 		chip = irq_data_get_irq_chip(data);
+		/*
+		 * The interrupt descriptor might have been cleaned up
+		 * already, but it is not yet removed from the radix tree
+		 */
+		if (!chip) {
+			raw_spin_unlock(&desc->lock);
+			continue;
+		}
+
 		if (!irqd_can_move_in_process_context(data) && chip->irq_mask)
 			chip->irq_mask(data);
 

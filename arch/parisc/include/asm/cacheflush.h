@@ -27,8 +27,6 @@ void flush_user_dcache_range_asm(unsigned long, unsigned long);
 void flush_kernel_dcache_range_asm(unsigned long, unsigned long);
 void flush_kernel_dcache_page_asm(void *);
 void flush_kernel_icache_page(void *);
-void flush_user_dcache_range(unsigned long, unsigned long);
-void flush_user_icache_range(unsigned long, unsigned long);
 
 /* Cache flush operations */
 
@@ -120,10 +118,6 @@ flush_anon_page(struct vm_area_struct *vma, struct page *page, unsigned long vma
 		preempt_enable();
 	}
 }
-
-#ifdef CONFIG_DEBUG_RODATA
-void mark_rodata_ro(void);
-#endif
 
 #include <asm/kmap_types.h>
 

@@ -56,6 +56,7 @@ static int afs_inode_map_status(struct afs_vnode *vnode, struct key *key)
 	case AFS_FTYPE_SYMLINK:
 		inode->i_mode	= S_IFLNK | vnode->status.mode;
 		inode->i_op	= &page_symlink_inode_operations;
+		inode_nohighmem(inode);
 		break;
 	default:
 		printk("kAFS: AFS vnode with undefined type\n");
@@ -374,12 +375,10 @@ error_unlock:
 /*
  * read the attributes of an inode
  */
-int afs_getattr(struct vfsmount *mnt, struct dentry *dentry,
-		      struct kstat *stat)
+int afs_getattr(const struct path *path, struct kstat *stat,
+		u32 request_mask, unsigned int query_flags)
 {
-	struct inode *inode;
-
-	inode = d_inode(dentry);
+	struct inode *inode = d_inode(path->dentry);
 
 	_enter("{ ino=%lu v=%u }", inode->i_ino, inode->i_generation);
 

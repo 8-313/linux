@@ -13,6 +13,7 @@ struct netns_frags {
 	int			timeout;
 	int			high_thresh;
 	int			low_thresh;
+	int			max_dist;
 };
 
 /**
@@ -99,7 +100,6 @@ struct inet_frags {
 	void			(*constructor)(struct inet_frag_queue *q,
 					       const void *arg);
 	void			(*destructor)(struct inet_frag_queue *);
-	void			(*skb_free)(struct sk_buff *);
 	void			(*frag_expire)(unsigned long data);
 	struct kmem_cache	*frags_cachep;
 	const char		*frags_cache_name;
@@ -164,13 +164,7 @@ static inline void add_frag_mem_limit(struct netns_frags *nf, int i)
 
 static inline unsigned int sum_frag_mem_limit(struct netns_frags *nf)
 {
-	unsigned int res;
-
-	local_bh_disable();
-	res = percpu_counter_sum_positive(&nf->mem);
-	local_bh_enable();
-
-	return res;
+	return percpu_counter_sum_positive(&nf->mem);
 }
 
 /* RFC 3168 support :

@@ -89,6 +89,8 @@
 #define VIDCON0_ENVID_F			(1 << 0)
 
 /* VIDOUTCON0 */
+#define VIDOUT_INTERLACE_FIELD_F	(1 << 29)
+#define VIDOUT_INTERLACE_EN_F		(1 << 28)
 #define VIDOUT_LCD_ON			(1 << 24)
 #define VIDOUT_IF_F_MASK		(0x3 << 20)
 #define VIDOUT_RGB_IF			(0x0 << 20)
@@ -179,9 +181,9 @@
 #define TRIGCON_TRIGMODE_W1BUF		(1 << 10)
 #define TRIGCON_SWTRIGCMD_W0BUF		(1 << 6)
 #define TRIGCON_TRIGMODE_W0BUF		(1 << 5)
-#define TRIGCON_HWTRIGMASK_I80_RGB	(1 << 4)
-#define TRIGCON_HWTRIGEN_I80_RGB	(1 << 3)
-#define TRIGCON_HWTRIG_INV_I80_RGB	(1 << 2)
+#define TRIGCON_HWTRIGMASK		(1 << 4)
+#define TRIGCON_HWTRIGEN		(1 << 3)
+#define TRIGCON_HWTRIG_INV		(1 << 2)
 #define TRIGCON_SWTRIGCMD		(1 << 1)
 #define TRIGCON_SWTRIGEN		(1 << 0)
 

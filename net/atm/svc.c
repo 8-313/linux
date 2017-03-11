@@ -10,7 +10,7 @@
 #include <linux/kernel.h>	/* printk */
 #include <linux/skbuff.h>
 #include <linux/wait.h>
-#include <linux/sched.h>	/* jiffies and HZ */
+#include <linux/sched/signal.h>
 #include <linux/fcntl.h>	/* O_NONBLOCK */
 #include <linux/init.h>
 #include <linux/atm.h>		/* ATM stuff */
@@ -546,7 +546,7 @@ static int svc_addparty(struct socket *sock, struct sockaddr *sockaddr,
 		schedule();
 	}
 	finish_wait(sk_sleep(sk), &wait);
-	error = xchg(&sk->sk_err_soft, 0);
+	error = -xchg(&sk->sk_err_soft, 0);
 out:
 	release_sock(sk);
 	return error;
@@ -573,7 +573,7 @@ static int svc_dropparty(struct socket *sock, int ep_ref)
 		error = -EUNATCH;
 		goto out;
 	}
-	error = xchg(&sk->sk_err_soft, 0);
+	error = -xchg(&sk->sk_err_soft, 0);
 out:
 	release_sock(sk);
 	return error;

@@ -55,6 +55,8 @@ static struct usb_device_id ath9k_hif_usb_ids[] = {
 	  .driver_info = AR9280_USB },  /* Buffalo WLI-UV-AG300P */
 	{ USB_DEVICE(0x04da, 0x3904),
 	  .driver_info = AR9280_USB },
+	{ USB_DEVICE(0x0930, 0x0a08),
+	  .driver_info = AR9280_USB },  /* Toshiba WLM-20U2 and GN-1080 */
 
 	{ USB_DEVICE(0x0cf3, 0x20ff),
 	  .driver_info = STORAGE_DEVICE },
@@ -525,7 +527,7 @@ static void ath9k_hif_usb_rx_stream(struct hif_device_usb *hif_dev,
 				    struct sk_buff *skb)
 {
 	struct sk_buff *nskb, *skb_pool[MAX_PKT_NUM_IN_TRANSFER];
-	int index = 0, i = 0, len = skb->len;
+	int index = 0, i, len = skb->len;
 	int rx_remain_len, rx_pkt_len;
 	u16 pool_index = 0;
 	u8 *ptr;
@@ -995,7 +997,8 @@ static int ath9k_hif_usb_download_fw(struct hif_device_usb *hif_dev)
 		err = usb_control_msg(hif_dev->udev,
 				      usb_sndctrlpipe(hif_dev->udev, 0),
 				      FIRMWARE_DOWNLOAD, 0x40 | USB_DIR_OUT,
-				      addr >> 8, 0, buf, transfer, HZ);
+				      addr >> 8, 0, buf, transfer,
+				      USB_MSG_TIMEOUT);
 		if (err < 0) {
 			kfree(buf);
 			return err;
@@ -1018,7 +1021,7 @@ static int ath9k_hif_usb_download_fw(struct hif_device_usb *hif_dev)
 	err = usb_control_msg(hif_dev->udev, usb_sndctrlpipe(hif_dev->udev, 0),
 			      FIRMWARE_DOWNLOAD_COMP,
 			      0x40 | USB_DIR_OUT,
-			      firm_offset >> 8, 0, NULL, 0, HZ);
+			      firm_offset >> 8, 0, NULL, 0, USB_MSG_TIMEOUT);
 	if (err)
 		return -EIO;
 
@@ -1247,7 +1250,7 @@ static int send_eject_command(struct usb_interface *interface)
 
 	dev_info(&udev->dev, "Ejecting storage device...\n");
 	r = usb_bulk_msg(udev, usb_sndbulkpipe(udev, bulk_out_ep),
-		cmd, 31, NULL, 2000);
+		cmd, 31, NULL, 2 * USB_MSG_TIMEOUT);
 	kfree(cmd);
 	if (r)
 		return r;
@@ -1312,7 +1315,7 @@ static void ath9k_hif_usb_reboot(struct usb_device *udev)
 		return;
 
 	ret = usb_interrupt_msg(udev, usb_sndintpipe(udev, USB_REG_OUT_PIPE),
-			   buf, 4, NULL, HZ);
+			   buf, 4, NULL, USB_MSG_TIMEOUT);
 	if (ret)
 		dev_err(&udev->dev, "ath9k_htc: USB reboot failed\n");
 

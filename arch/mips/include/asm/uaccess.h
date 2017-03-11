@@ -14,7 +14,9 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/thread_info.h>
+#include <linux/string.h>
 #include <asm/asm-eva.h>
+#include <asm/extable.h>
 
 /*
  * The fs value determines whether argument validity checking should be
@@ -88,14 +90,14 @@ extern u64 __ua_limit;
  */
 static inline bool eva_kernel_access(void)
 {
-	if (!config_enabled(CONFIG_EVA))
+	if (!IS_ENABLED(CONFIG_EVA))
 		return false;
 
 	return segment_eq(get_fs(), get_ds());
 }
 
 /*
- * Is a address valid? This does a straighforward calculation rather
+ * Is a address valid? This does a straightforward calculation rather
  * than tests.
  *
  * Address valid if:
@@ -599,7 +601,7 @@ extern void __put_user_unknown(void);
  * On error, the variable @x is set to zero.
  */
 #define __get_user_unaligned(x,ptr) \
-	__get_user__unalignednocheck((x),(ptr),sizeof(*(ptr)))
+	__get_user_unaligned_nocheck((x),(ptr),sizeof(*(ptr)))
 
 /*
  * Yuck.  We need two variants, one for 64bit operation and one
@@ -620,8 +622,8 @@ extern void __get_user_unaligned_unknown(void);
 do {									\
 	switch (size) {							\
 	case 1: __get_data_asm(val, "lb", ptr); break;			\
-	case 2: __get_user_unaligned_asm(val, "ulh", ptr); break;	\
-	case 4: __get_user_unaligned_asm(val, "ulw", ptr); break;	\
+	case 2: __get_data_unaligned_asm(val, "ulh", ptr); break;	\
+	case 4: __get_data_unaligned_asm(val, "ulw", ptr); break;	\
 	case 8: __GET_USER_UNALIGNED_DW(val, ptr); break;		\
 	default: __get_user_unaligned_unknown(); break;			\
 	}								\
@@ -857,7 +859,10 @@ extern size_t __copy_user(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
+									\
+	check_object_size(__cu_from, __cu_len, true);			\
 	might_fault();							\
+									\
 	if (eva_kernel_access())					\
 		__cu_len = __invoke_copy_to_kernel(__cu_to, __cu_from,	\
 						   __cu_len);		\
@@ -878,6 +883,9 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
+									\
+	check_object_size(__cu_from, __cu_len, true);			\
+									\
 	if (eva_kernel_access())					\
 		__cu_len = __invoke_copy_to_kernel(__cu_to, __cu_from,	\
 						   __cu_len);		\
@@ -896,6 +904,9 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
+									\
+	check_object_size(__cu_to, __cu_len, false);			\
+									\
 	if (eva_kernel_access())					\
 		__cu_len = __invoke_copy_from_kernel_inatomic(__cu_to,	\
 							      __cu_from,\
@@ -930,6 +941,9 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
+									\
+	check_object_size(__cu_from, __cu_len, true);			\
+									\
 	if (eva_kernel_access()) {					\
 		__cu_len = __invoke_copy_to_kernel(__cu_to,		\
 						   __cu_from,		\
@@ -1122,9 +1136,18 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	might_fault();							\
-	__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,		\
-					   __cu_len);			\
+									\
+	check_object_size(__cu_to, __cu_len, false);			\
+									\
+	if (eva_kernel_access()) {					\
+		__cu_len = __invoke_copy_from_kernel(__cu_to,		\
+						     __cu_from,		\
+						     __cu_len);		\
+	} else {							\
+		might_fault();						\
+		__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,	\
+						   __cu_len);		\
+	}								\
 	__cu_len;							\
 })
 
@@ -1154,6 +1177,9 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
+									\
+	check_object_size(__cu_to, __cu_len, false);			\
+									\
 	if (eva_kernel_access()) {					\
 		__cu_len = __invoke_copy_from_kernel(__cu_to,		\
 						     __cu_from,		\
@@ -1164,6 +1190,8 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 			__cu_len = __invoke_copy_from_user(__cu_to,	\
 							   __cu_from,	\
 							   __cu_len);   \
+		} else {						\
+			memset(__cu_to, 0, __cu_len);			\
 		}							\
 	}								\
 	__cu_len;							\
@@ -1213,6 +1241,9 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 	__cu_len;							\
 })
 
+extern __kernel_size_t __bzero_kernel(void __user *addr, __kernel_size_t size);
+extern __kernel_size_t __bzero(void __user *addr, __kernel_size_t size);
+
 /*
  * __clear_user: - Zero a block of memory in user space, with less checking.
  * @to:	  Destination address, in user space.
@@ -1229,16 +1260,28 @@ __clear_user(void __user *addr, __kernel_size_t size)
 {
 	__kernel_size_t res;
 
-	might_fault();
-	__asm__ __volatile__(
-		"move\t$4, %1\n\t"
-		"move\t$5, $0\n\t"
-		"move\t$6, %2\n\t"
-		__MODULE_JAL(__bzero)
-		"move\t%0, $6"
-		: "=r" (res)
-		: "r" (addr), "r" (size)
-		: "$4", "$5", "$6", __UA_t0, __UA_t1, "$31");
+	if (eva_kernel_access()) {
+		__asm__ __volatile__(
+			"move\t$4, %1\n\t"
+			"move\t$5, $0\n\t"
+			"move\t$6, %2\n\t"
+			__MODULE_JAL(__bzero_kernel)
+			"move\t%0, $6"
+			: "=r" (res)
+			: "r" (addr), "r" (size)
+			: "$4", "$5", "$6", __UA_t0, __UA_t1, "$31");
+	} else {
+		might_fault();
+		__asm__ __volatile__(
+			"move\t$4, %1\n\t"
+			"move\t$5, $0\n\t"
+			"move\t$6, %2\n\t"
+			__MODULE_JAL(__bzero)
+			"move\t%0, $6"
+			: "=r" (res)
+			: "r" (addr), "r" (size)
+			: "$4", "$5", "$6", __UA_t0, __UA_t1, "$31");
+	}
 
 	return res;
 }
@@ -1252,6 +1295,9 @@ __clear_user(void __user *addr, __kernel_size_t size)
 		__cl_size = __clear_user(__cl_addr, __cl_size);		\
 	__cl_size;							\
 })
+
+extern long __strncpy_from_kernel_nocheck_asm(char *__to, const char __user *__from, long __len);
+extern long __strncpy_from_user_nocheck_asm(char *__to, const char __user *__from, long __len);
 
 /*
  * __strncpy_from_user: - Copy a NUL terminated string from userspace, with less checking.
@@ -1304,6 +1350,9 @@ __strncpy_from_user(char *__to, const char __user *__from, long __len)
 	return res;
 }
 
+extern long __strncpy_from_kernel_asm(char *__to, const char __user *__from, long __len);
+extern long __strncpy_from_user_asm(char *__to, const char __user *__from, long __len);
+
 /*
  * strncpy_from_user: - Copy a NUL terminated string from userspace.
  * @dst:   Destination address, in kernel space.  This buffer must be at
@@ -1353,6 +1402,9 @@ strncpy_from_user(char *__to, const char __user *__from, long __len)
 	return res;
 }
 
+extern long __strlen_kernel_asm(const char __user *s);
+extern long __strlen_user_asm(const char __user *s);
+
 /*
  * strlen_user: - Get the size of a string in user space.
  * @str: The string to measure.
@@ -1384,7 +1436,7 @@ static inline long strlen_user(const char __user *s)
 		might_fault();
 		__asm__ __volatile__(
 			"move\t$4, %1\n\t"
-			__MODULE_JAL(__strlen_kernel_asm)
+			__MODULE_JAL(__strlen_user_asm)
 			"move\t%0, $2"
 			: "=r" (res)
 			: "r" (s)
@@ -1393,6 +1445,9 @@ static inline long strlen_user(const char __user *s)
 
 	return res;
 }
+
+extern long __strnlen_kernel_nocheck_asm(const char __user *s, long n);
+extern long __strnlen_user_nocheck_asm(const char __user *s, long n);
 
 /* Returns: 0 if bad, string length+1 (memory size) of string if ok */
 static inline long __strnlen_user(const char __user *s, long n)
@@ -1422,6 +1477,9 @@ static inline long __strnlen_user(const char __user *s, long n)
 
 	return res;
 }
+
+extern long __strnlen_kernel_asm(const char __user *s, long n);
+extern long __strnlen_user_asm(const char __user *s, long n);
 
 /*
  * strnlen_user: - Get the size of a string in user space.
@@ -1463,13 +1521,5 @@ static inline long strnlen_user(const char __user *s, long n)
 
 	return res;
 }
-
-struct exception_table_entry
-{
-	unsigned long insn;
-	unsigned long nextinsn;
-};
-
-extern int fixup_exception(struct pt_regs *regs);
 
 #endif /* _ASM_UACCESS_H */

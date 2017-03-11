@@ -730,7 +730,7 @@ static int m_can_poll(struct napi_struct *napi, int quota)
 		work_done += m_can_do_rx_poll(dev, (quota - work_done));
 
 	if (work_done < quota) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		m_can_enable_all_interrupts(priv);
 	}
 
@@ -955,7 +955,7 @@ static struct net_device *alloc_m_can_dev(void)
 	priv->can.do_get_berr_counter = m_can_get_berr_counter;
 
 	/* CAN_CTRLMODE_FD_NON_ISO is fixed with M_CAN IP v3.0.1 */
-	priv->can.ctrlmode = CAN_CTRLMODE_FD_NON_ISO;
+	can_set_static_ctrlmode(dev, CAN_CTRLMODE_FD_NON_ISO);
 
 	/* CAN_CTRLMODE_FD_NON_ISO can not be changed with M_CAN IP v3.0.1 */
 	priv->can.ctrlmode_supported = CAN_CTRLMODE_LOOPBACK |

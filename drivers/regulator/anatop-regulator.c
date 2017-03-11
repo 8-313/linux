@@ -296,12 +296,24 @@ static int anatop_regulator_probe(struct platform_device *pdev)
 		if (!sreg->sel && !strcmp(sreg->name, "vddpu"))
 			sreg->sel = 22;
 
-		if (!sreg->sel) {
+		if (!sreg->bypass && !sreg->sel) {
 			dev_err(&pdev->dev, "Failed to read a valid default voltage selector.\n");
 			return -EINVAL;
 		}
 	} else {
+		u32 enable_bit;
+
 		rdesc->ops = &anatop_rops;
+
+		if (!of_property_read_u32(np, "anatop-enable-bit",
+					  &enable_bit)) {
+			anatop_rops.enable  = regulator_enable_regmap;
+			anatop_rops.disable = regulator_disable_regmap;
+			anatop_rops.is_enabled = regulator_is_enabled_regmap;
+
+			rdesc->enable_reg = sreg->control_reg;
+			rdesc->enable_mask = BIT(enable_bit);
+		}
 	}
 
 	/* register regulator */
